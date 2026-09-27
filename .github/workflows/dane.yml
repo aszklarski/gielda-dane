@@ -1,0 +1,39 @@
+# Repozytorium danych Giełda: pobiera świece Dukascopy i publikuje je przez GitHub Pages.
+# Na GitHubie ten plik ma ścieżkę .github/workflows/dane.yml (README).
+name: Dane Giełda
+
+on:
+  schedule:
+    - cron: "7 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  dane:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: github-pages
+      url: ${{ steps.wdrozenie.outputs.page_url }}
+    steps:
+      - name: Pobranie repozytorium
+        uses: actions/checkout@v6
+      - name: Pobranie świec z Dukascopy
+        run: python3 pobierz_dane.py --konfiguracja konfiguracja.txt --wyjscie _site --ostatni-commit "$(git log -1 --format=%cI)"
+      - name: Konfiguracja Pages
+        uses: actions/configure-pages@v5
+      - name: Paczka strony
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+      - name: Publikacja
+        id: wdrozenie
+        uses: actions/deploy-pages@v4

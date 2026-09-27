@@ -1,0 +1,5 @@
+# Konfiguracja repozytorium danych Giełda (zob. README.md)
+adres_strony: https://aszklarski.github.io/gielda-dane/
+swiece: 150
+instrumenty: EUR/USD, XAU/USD, BTC/USD
+interwaly: 1D, 4H, 1H
