@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   sprawdz:
+    timeout-minutes: 2
     runs-on: ubuntu-latest
     permissions:
       actions: read

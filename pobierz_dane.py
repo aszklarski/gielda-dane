@@ -15,9 +15,9 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 
-WERSJA = "0.0.6"
+WERSJA = "0.0.7"
 LIMIT_CZASU = 30
-BUDZET_PRZEBIEGU = 540
+BUDZET_PRZEBIEGU = 600
 MAPA_INTERWALOW = {
     "1m": ("1MIN", 60), "5m": ("5MIN", 300), "15m": ("15MIN", 900),
     "30m": ("30MIN", 1800), "1H": ("1HOUR", 3600), "4H": ("4HOUR", 14400),
@@ -93,8 +93,8 @@ def wczytaj_konfiguracje(tekst):
     nazwy = [v.replace("/", "").casefold() for v in konf["instrumenty"]]
     if len(set(nazwy)) != len(nazwy):
         bledy.append("instrumenty: powtórzona nazwa pliku")
-    if len(konf["instrumenty"]) * len(konf["interwaly"]) > 60:
-        bledy.append("instrumenty: liczba par przekracza 60")
+    if len(konf["instrumenty"]) * len(konf["interwaly"]) > 90:
+        bledy.append("instrumenty: liczba par przekracza 90")
     return konf, bledy
 
 
