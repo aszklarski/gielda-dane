@@ -1,7 +1,7 @@
 """Świece MID Dukascopy; jawny klient, bez ponawiania i obchodzenia blokad."""
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, localcontext
 import hashlib
 import html
@@ -15,8 +15,9 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 
-WERSJA = "0.0.4"
-LIMIT_CZASU = 60
+WERSJA = "0.0.6"
+LIMIT_CZASU = 30
+BUDZET_PRZEBIEGU = 540
 MAPA_INTERWALOW = {
     "1m": ("1MIN", 60), "5m": ("5MIN", 300), "15m": ("15MIN", 900),
     "30m": ("30MIN", 1800), "1H": ("1HOUR", 3600), "4H": ("4HOUR", 14400),
@@ -92,8 +93,8 @@ def wczytaj_konfiguracje(tekst):
     nazwy = [v.replace("/", "").casefold() for v in konf["instrumenty"]]
     if len(set(nazwy)) != len(nazwy):
         bledy.append("instrumenty: powtórzona nazwa pliku")
-    if len(konf["instrumenty"]) * len(konf["interwaly"]) > 30:
-        bledy.append("instrumenty: liczba par przekracza 30")
+    if len(konf["instrumenty"]) * len(konf["interwaly"]) > 60:
+        bledy.append("instrumenty: liczba par przekracza 60")
     return konf, bledy
 
 
@@ -202,12 +203,34 @@ def plik_bledu(instrument, interwal, powod, aktualizacja, ostatni_commit=None):
         "zrodlo: Dukascopy freeserv chart/json3", f"status: BLAD: {powod}", ""]))
 
 
+def output_github(klucz, wartosc):
+    if os.environ.get("GITHUB_OUTPUT"):
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+            f.write(f"{klucz}={wartosc}\n")
+
+
 def main(argv=None, otworz=urlopen, spij=time.sleep, teraz=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--konfiguracja", default="konfiguracja.txt")
     parser.add_argument("--wyjscie", default="_site")
     parser.add_argument("--ostatni-commit", default="")
+    parser.add_argument("--blokada", help="plik znacznika blokady HTTP 403/429")
     args = parser.parse_args(argv)
+    output_github("publikuj", "nie")
+    aktualizacja = teraz or datetime.now(timezone.utc)
+    if args.blokada and Path(args.blokada).exists():
+        try:
+            znacznik = json.loads(Path(args.blokada).read_text(encoding="utf-8"))
+            czas = datetime.fromisoformat(znacznik["czas_utc"].replace("Z", "+00:00"))
+            if czas.tzinfo is None or znacznik["kod"] not in (403, 429):
+                raise ValueError("niepoprawny znacznik")
+            if aktualizacja < czas + timedelta(minutes=60):
+                print(f"PRZERWA po blokadzie Dukascopy (HTTP {znacznik['kod']}, {czas_utc(czas)} UTC): "
+                      f"bez zapytań do {czas_utc(czas + timedelta(minutes=60))} UTC")
+                return 0
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            prefiks = "::warning::" if os.environ.get("GITHUB_ACTIONS") == "true" else "UWAGA: "
+            print(prefiks + "niepoprawny znacznik blokady — pomijam")
     try:
         konf, bledy = wczytaj_konfiguracje(Path(args.konfiguracja).read_text(encoding="utf-8"))
     except (OSError, UnicodeError):
@@ -229,6 +252,7 @@ def main(argv=None, otworz=urlopen, spij=time.sleep, teraz=None):
     (wyjscie / "dane").mkdir(parents=True, exist_ok=True)
     blokada, zapytan, udane, indeks = None, 0, 0, []
     aktualizacja = teraz or datetime.now(timezone.utc)
+    start = time.monotonic()
     for instrument in konf["instrumenty"]:
         for interwal in konf["interwaly"]:
             aktualizacja = teraz or datetime.now(timezone.utc)
@@ -236,8 +260,14 @@ def main(argv=None, otworz=urlopen, spij=time.sleep, teraz=None):
             strony = []
             if not powod:
                 for strona in ("B", "A"):
+                    if time.monotonic() - start >= BUDZET_PRZEBIEGU:
+                        powod = "przerwano: limit czasu przebiegu"
+                        break
                     if zapytan:
                         spij(1)
+                    if time.monotonic() - start >= BUDZET_PRZEBIEGU:
+                        powod = "przerwano: limit czasu przebiegu"
+                        break
                     zapytan += 1
                     req = zapytanie(instrument, MAPA_INTERWALOW[interwal][0], strona,
                                     konf["swiece"], int(aktualizacja.timestamp() * 1000), konf["adres_strony"])
@@ -252,6 +282,12 @@ def main(argv=None, otworz=urlopen, spij=time.sleep, teraz=None):
                         powod = {403: "odmowa dostepu (HTTP 403)", 429: "blokada lub limit zapytan (HTTP 429)"}.get(exc.code, f"HTTP {exc.code}")
                         if exc.code in (403, 429):
                             blokada = exc.code
+                            if args.blokada:
+                                plik = Path(args.blokada)
+                                plik.parent.mkdir(parents=True, exist_ok=True)
+                                plik.write_text(json.dumps({"czas_utc": czas_utc(teraz or datetime.now(timezone.utc)),
+                                                           "kod": exc.code}) + "\n", encoding="utf-8")
+                                output_github("blokada", "tak")
                         exc.close()
                     except TimeoutError:
                         powod = "przekroczony czas"
@@ -284,6 +320,8 @@ def main(argv=None, otworz=urlopen, spij=time.sleep, teraz=None):
               + '<h1>Gielda - dane</h1><p>aktualizacja_utc: ' + czas_utc(aktualizacja) + '</p><table>'
               + '<tr><th>Plik</th><th>Status</th></tr>' + "\n".join(indeks) + '</table></html>\n')
     (wyjscie / "index.html").write_bytes(strona.encode("ascii"))
+    if udane:
+        output_github("publikuj", "tak")
     return 0 if udane else 1
 
 

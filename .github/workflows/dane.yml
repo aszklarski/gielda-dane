@@ -1,39 +1,93 @@
-# Repozytorium danych Giełda: pobiera świece Dukascopy i publikuje je przez GitHub Pages.
-# Na GitHubie ten plik ma ścieżkę .github/workflows/dane.yml (README).
+# W repozytorium danych umieść jako .github/workflows/dane.yml.
 name: Dane Giełda
 
 on:
   schedule:
-    - cron: "7,22,37,52 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: false
 
 jobs:
-  dane:
+  sprawdz:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    permissions:
+      actions: read
+    outputs:
+      uruchom: ${{ steps.bezpiecznik.outputs.uruchom }}
+    steps:
+      - name: Pomiń ponowienia i nakładające się przebiegi
+        id: bezpiecznik
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          echo "uruchom=nie" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_RUN_ATTEMPT" -gt 1 ]; then
+            echo "ponowienie wyłączone — uruchom nowy przebieg przez Run workflow"
+            exit 0
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/dane.yml/runs?per_page=100" > runs.json
+          poprzednie=$(jq --argjson id "$GITHUB_RUN_ID" -s '[.[].workflow_runs[] | select(.id < $id and .status != "completed")] | length' runs.json)
+          if [ "$poprzednie" -gt 0 ]; then
+            echo "poprzedni przebieg jeszcze trwa"
+            exit 0
+          fi
+          echo "uruchom=tak" >> "$GITHUB_OUTPUT"
+
+  dane:
+    needs: sprawdz
+    if: needs.sprawdz.outputs.uruchom == 'tak'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.wdrozenie.outputs.page_url }}
     steps:
+      - name: Niezależna blokada ponowienia jobu
+        id: proba
+        shell: bash
+        run: |
+          if [ "$GITHUB_RUN_ATTEMPT" -gt 1 ]; then
+            echo "ponowienie wyłączone — uruchom nowy przebieg przez Run workflow"
+            echo "uruchom=nie" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "uruchom=tak" >> "$GITHUB_OUTPUT"
       - name: Pobranie repozytorium
+        if: steps.proba.outputs.uruchom == 'tak'
         uses: actions/checkout@v6
+      - name: Odtworzenie znacznika blokady
+        if: steps.proba.outputs.uruchom == 'tak'
+        uses: actions/cache/restore@v4
+        with:
+          path: blokada
+          key: blokada-${{ github.run_id }}
+          restore-keys: blokada-
       - name: Pobranie świec z Dukascopy
-        run: python3 pobierz_dane.py --konfiguracja konfiguracja.txt --wyjscie _site --ostatni-commit "$(git log -1 --format=%cI)"
+        id: pobierz
+        if: steps.proba.outputs.uruchom == 'tak'
+        run: python3 pobierz_dane.py --konfiguracja konfiguracja.txt --wyjscie _site --blokada blokada/czas.txt --ostatni-commit "$(git log -1 --format=%cI)"
+      - name: Zachowanie nowej blokady
+        if: always() && steps.proba.outputs.uruchom == 'tak' && steps.pobierz.outputs.blokada == 'tak'
+        uses: actions/cache/save@v4
+        with:
+          path: blokada
+          key: blokada-${{ github.run_id }}
       - name: Konfiguracja Pages
+        if: steps.proba.outputs.uruchom == 'tak' && steps.pobierz.outputs.publikuj == 'tak'
         uses: actions/configure-pages@v5
       - name: Paczka strony
+        if: steps.proba.outputs.uruchom == 'tak' && steps.pobierz.outputs.publikuj == 'tak'
         uses: actions/upload-pages-artifact@v4
         with:
           path: _site
       - name: Publikacja
         id: wdrozenie
+        if: steps.proba.outputs.uruchom == 'tak' && steps.pobierz.outputs.publikuj == 'tak'
         uses: actions/deploy-pages@v4
