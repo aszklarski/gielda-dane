@@ -70,16 +70,29 @@ jobs:
           path: blokada
           key: blokada-${{ github.run_id }}
           restore-keys: blokada-
+      - name: Odtworzenie historii 1H
+        if: steps.proba.outputs.uruchom == 'tak'
+        uses: actions/cache/restore@v4
+        with:
+          path: historia
+          key: historia-${{ github.run_id }}
+          restore-keys: historia-
       - name: Pobranie świec z Dukascopy
         id: pobierz
         if: steps.proba.outputs.uruchom == 'tak'
-        run: python3 pobierz_dane.py --konfiguracja konfiguracja.txt --wyjscie _site --blokada blokada/czas.txt --ostatni-commit "$(git log -1 --format=%cI)"
+        run: python3 pobierz_dane.py --konfiguracja konfiguracja.txt --wyjscie _site --blokada blokada/czas.txt --historia historia --ostatni-commit "$(git log -1 --format=%cI)"
       - name: Zachowanie nowej blokady
         if: always() && steps.proba.outputs.uruchom == 'tak' && steps.pobierz.outputs.blokada == 'tak'
         uses: actions/cache/save@v4
         with:
           path: blokada
           key: blokada-${{ github.run_id }}
+      - name: Zachowanie historii 1H
+        if: always() && steps.proba.outputs.uruchom == 'tak' && steps.pobierz.outputs.historia == 'tak'
+        uses: actions/cache/save@v4
+        with:
+          path: historia
+          key: historia-${{ github.run_id }}
       - name: Konfiguracja Pages
         if: steps.proba.outputs.uruchom == 'tak' && steps.pobierz.outputs.publikuj == 'tak'
         uses: actions/configure-pages@v5

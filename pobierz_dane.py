@@ -15,7 +15,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 
-WERSJA = "0.0.7"
+WERSJA = "0.0.15"
 LIMIT_CZASU = 30
 BUDZET_PRZEBIEGU = 600
 MAPA_INTERWALOW = {
@@ -91,6 +91,9 @@ def wczytaj_konfiguracje(tekst):
             if k == "interwaly" and v not in MAPA_INTERWALOW:
                 bledy.append(k + ": niedozwolony interwał " + v + (" (brak w Dukascopy)" if v == "2H" else ""))
     nazwy = [v.replace("/", "").casefold() for v in konf["instrumenty"]]
+    if (isinstance(konf.get("swiece"), int) and konf["swiece"] > 190
+            and any(it in ("4H", "1D") for it in konf["interwaly"])):
+        bledy.append("swiece: dla 4H/1D najwyżej 190 (historia 1H)")
     if len(set(nazwy)) != len(nazwy):
         bledy.append("instrumenty: powtórzona nazwa pliku")
     if len(konf["instrumenty"]) * len(konf["interwaly"]) > 90:
@@ -171,6 +174,77 @@ def policz_mid(bid, ask, interwal):
         return "niewyrownane swiece"
 
 
+def nowy_jork(dt):
+    utc = dt.astimezone(timezone.utc)
+    marzec = datetime(utc.year, 3, 8, 7, tzinfo=timezone.utc)
+    listopad = datetime(utc.year, 11, 1, 6, tzinfo=timezone.utc)
+    poczatek = marzec + timedelta(days=(6 - marzec.weekday()) % 7)
+    koniec = listopad + timedelta(days=(6 - listopad.weekday()) % 7)
+    przesuniecie = -4 if poczatek <= utc < koniec else -5
+    return dt.astimezone(timezone(timedelta(hours=przesuniecie)))
+
+
+def wczytaj_historie(plik, instrument):
+    if not plik.exists():
+        return []
+    try:
+        linie = plik.read_text(encoding="ascii").splitlines()
+        if not linie or linie[0] != "GIELDA-HISTORIA 1 " + instrument:
+            raise ValueError()
+        historia = []
+        for linia in linie[1:]:
+            pola = linia.split(",")
+            if (len(pola) != 5 or not re.fullmatch(r"[0-9]+", pola[0])
+                    or any(not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", p) for p in pola[1:])):
+                raise ValueError()
+            ms = int(pola[0])
+            o, h, l, c = map(Decimal, pola[1:])
+            if (ms % 3600000 or (historia and ms <= historia[-1][0])
+                    or min(o, h, l, c) <= 0 or h < max(o, c, l) or l > min(o, c)):
+                raise ValueError()
+            datetime.fromtimestamp(ms // 1000, timezone.utc)
+            historia.append([ms, o, h, l, c])
+        return historia
+    except (OSError, UnicodeError, ValueError, OverflowError, ArithmeticError):
+        print(f"::warning::historia 1H {instrument}: niepoprawny cache")
+        return []
+
+
+def agreguj_ny17(historia, interwal, swiece):
+    koszyki = {}
+    for ms, o, h, l, c in historia:
+        t = datetime.fromtimestamp(int(ms) // 1000, timezone.utc)
+        s = nowy_jork(t) + timedelta(hours=7)
+        if interwal == "4H":
+            start = t - timedelta(hours=s.hour % 4)
+        else:
+            sesja = s.date()
+            if sesja.weekday() == 5:
+                sesja -= timedelta(days=1)
+            elif sesja.weekday() == 6:
+                sesja += timedelta(days=1)
+            # 17:00 NY jest poza godzinami zmiany czasu; przesunięcie z 17 UTC
+            # tego samego dnia jest już przesunięciem obowiązującym o 17 NY.
+            start = datetime(sesja.year, sesja.month, sesja.day, 17, tzinfo=timezone.utc) - timedelta(days=1)
+            start -= nowy_jork(start).utcoffset()
+        if start not in koszyki:
+            koszyki[start] = [o, h, l, c]
+        else:
+            w = koszyki[start]
+            w[1], w[2], w[3] = max(w[1], h), min(w[2], l), c
+    czasy = sorted(koszyki)[1:][-swiece:]
+    if not czasy:
+        return BRAK
+    ceny = [koszyki[t] for t in czasy]
+    liczby = [v for w in ceny for v in w]
+    with localcontext() as ctx:
+        ctx.prec = max(28, max(v.adjusted() for v in liczby) - min(v.as_tuple().exponent for v in liczby) + 4)
+        d = max(0, max(-v.normalize().as_tuple().exponent for v in liczby))
+        kolumny = [[int(w[j] * 10 ** d) for w in ceny] for j in range(4)]
+    start = czasy[0]
+    return (start, [int((t - start).total_seconds()) // 3600 for t in czasy], *kolumny, d)
+
+
 def czas_utc(dt):
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if dt else "brak"
 
@@ -184,8 +258,10 @@ def bezpieczny_tekst(tekst):
 def plik_danych(instrument, interwal, mid, aktualizacja, ostatni_commit=None):
     start, n, o, h, l, c, d = mid
     punkt = "1" if d == 0 else "0." + "0" * (d - 1) + "1"
-    linie = ["GIELDA-DANE 1", f"instrument: {instrument}", f"interwal: {interwal}",
-             f"dukascopy: {MAPA_INTERWALOW[interwal][0]}", "cena: MID=(BID+ASK)/2", f"punkt: {punkt}",
+    ny17 = interwal in ("4H", "1D")
+    linie = ["GIELDA-DANE 2", f"instrument: {instrument}", f"interwal: {interwal}",
+             f"dukascopy: {'1HOUR' if ny17 else MAPA_INTERWALOW[interwal][0]}", "cena: MID=(BID+ASK)/2", f"punkt: {punkt}",
+             f"sesja: {'NY17' if ny17 else 'UTC'}",
              f"start_utc: {start:%Y-%m-%dT%H:%MZ}", f"krok: {interwal}",
              f"aktualizacja_utc: {czas_utc(aktualizacja)}", f"ostatni_commit_utc: {czas_utc(ostatni_commit)}",
              "zrodlo: Dukascopy freeserv chart/json3", "kolumny: n,o,h,l,c"]
@@ -197,7 +273,7 @@ def plik_danych(instrument, interwal, mid, aktualizacja, ostatni_commit=None):
 
 
 def plik_bledu(instrument, interwal, powod, aktualizacja, ostatni_commit=None):
-    return bezpieczny_tekst("\n".join(["GIELDA-DANE 1", f"instrument: {instrument}",
+    return bezpieczny_tekst("\n".join(["GIELDA-DANE 2", f"instrument: {instrument}",
         f"interwal: {interwal}", f"dukascopy: {MAPA_INTERWALOW[interwal][0]}",
         f"aktualizacja_utc: {czas_utc(aktualizacja)}", f"ostatni_commit_utc: {czas_utc(ostatni_commit)}",
         "zrodlo: Dukascopy freeserv chart/json3", f"status: BLAD: {powod}", ""]))
@@ -215,8 +291,10 @@ def main(argv=None, otworz=urlopen, spij=time.sleep, teraz=None):
     parser.add_argument("--wyjscie", default="_site")
     parser.add_argument("--ostatni-commit", default="")
     parser.add_argument("--blokada", help="plik znacznika blokady HTTP 403/429")
+    parser.add_argument("--historia", help="katalog historii MID 1H")
     args = parser.parse_args(argv)
     output_github("publikuj", "nie")
+    output_github("historia", "nie")
     aktualizacja = teraz or datetime.now(timezone.utc)
     if args.blokada and Path(args.blokada).exists():
         try:
@@ -254,11 +332,27 @@ def main(argv=None, otworz=urlopen, spij=time.sleep, teraz=None):
     aktualizacja = teraz or datetime.now(timezone.utc)
     start = time.monotonic()
     for instrument in konf["instrumenty"]:
+        wspolna = None
         for interwal in konf["interwaly"]:
             aktualizacja = teraz or datetime.now(timezone.utc)
+            ny17 = interwal in ("4H", "1D")
+            limit = konf["swiece"]
+            historia, plik_historii, pelne = [], None, True
+            if ny17 and wspolna is None:
+                pojemnosc = 24 * konf["swiece"] + 400
+                limit = pojemnosc
+                if args.historia:
+                    plik_historii = Path(args.historia) / (instrument.replace("/", "") + "_1HOUR_MID.txt")
+                    historia = wczytaj_historie(plik_historii, instrument)
+                    if len(historia) == pojemnosc:
+                        roznica = aktualizacja - datetime.fromtimestamp(historia[-1][0] // 1000, timezone.utc)
+                        mikrosekundy = (roznica.days * 86400 + roznica.seconds) * 1000000 + roznica.microseconds
+                        limit = max(1, -(-mikrosekundy // 3600000000) + 3)
+                        pelne = limit >= pojemnosc
+                        limit = min(limit, pojemnosc)
             powod = f"przerwano po blokadzie zrodla (HTTP {blokada})" if blokada else None
             strony = []
-            if not powod:
+            if not powod and not (ny17 and wspolna is not None):
                 for strona in ("B", "A"):
                     if time.monotonic() - start >= BUDZET_PRZEBIEGU:
                         powod = "przerwano: limit czasu przebiegu"
@@ -269,15 +363,15 @@ def main(argv=None, otworz=urlopen, spij=time.sleep, teraz=None):
                         powod = "przerwano: limit czasu przebiegu"
                         break
                     zapytan += 1
-                    req = zapytanie(instrument, MAPA_INTERWALOW[interwal][0], strona,
-                                    konf["swiece"], int(aktualizacja.timestamp() * 1000), konf["adres_strony"])
+                    req = zapytanie(instrument, "1HOUR" if ny17 else MAPA_INTERWALOW[interwal][0], strona,
+                                    limit, int(aktualizacja.timestamp() * 1000), konf["adres_strony"])
                     try:
                         with otworz(req, timeout=LIMIT_CZASU) as response:
                             wiersze = odpowiedz_na_wiersze(response.read().decode("ascii"))
                         if isinstance(wiersze, str):
                             powod = wiersze
                         else:
-                            strony.append(wiersze[-konf['swiece']:])
+                            strony.append(wiersze[-limit:])
                     except HTTPError as exc:
                         powod = {403: "odmowa dostepu (HTTP 403)", 429: "blokada lub limit zapytan (HTTP 429)"}.get(exc.code, f"HTTP {exc.code}")
                         if exc.code in (403, 429):
@@ -299,10 +393,40 @@ def main(argv=None, otworz=urlopen, spij=time.sleep, teraz=None):
                         powod = "niepoprawna odpowiedz"
                     if powod:
                         break
-            if not powod:
-                mid = policz_mid(*strony, interwal)
+            if ny17 and wspolna is not None:
+                powod = wspolna if isinstance(wspolna, str) else None
+            elif not powod:
+                mid = policz_mid(*strony, "1H" if ny17 else interwal)
                 if isinstance(mid, str):
                     powod = mid
+                elif ny17:
+                    poczatek, ns, *reszta = mid
+                    d = reszta[-1]
+                    swieze = [[int(poczatek.timestamp() * 1000) + n * 3600000,
+                               *[Decimal(f"{v}e-{d}") for v in ceny]]
+                              for n, *ceny in zip(ns, *reszta[:4])]
+                    if not pelne and swieze[0][0] > historia[-1][0]:
+                        powod = "historia 1H niespojna - pelne pobranie w nastepnym przebiegu"
+                        plik_historii.unlink()
+                    else:
+                        wspolna = (swieze if pelne else [w for w in historia if w[0] < swieze[0][0]] + swieze)[-pojemnosc:]
+                        if len(wspolna) < pojemnosc:
+                            print(f"::warning::historia 1H {instrument}: {len(wspolna)} z {pojemnosc} wierszy")
+                        if plik_historii is not None:
+                            plik_historii.parent.mkdir(parents=True, exist_ok=True)
+                            tekst = "GIELDA-HISTORIA 1 " + instrument + "\n"
+                            tekst += "".join(str(w[0]) + "," + ",".join(format(v, "f") for v in w[1:]) + "\n" for w in wspolna)
+                            plik_historii.write_bytes(tekst.encode("ascii"))
+            if ny17:
+                if powod:
+                    wspolna = powod
+                else:
+                    mid = agreguj_ny17(wspolna, interwal, konf["swiece"])
+                    if isinstance(mid, str):
+                        powod = mid
+                    if isinstance(mid, str) or len(mid[1]) < konf["swiece"]:
+                        k = 0 if isinstance(mid, str) else len(mid[1])
+                        print(f"::warning::{nazwa_pliku(instrument, interwal)}: {k} z {konf['swiece']} swiec (krotka historia 1H)")
             nazwa = nazwa_pliku(instrument, interwal)
             if powod:
                 tekst = plik_bledu(instrument, interwal, powod, aktualizacja, commit)
@@ -316,12 +440,18 @@ def main(argv=None, otworz=urlopen, spij=time.sleep, teraz=None):
             (wyjscie / nazwa).write_bytes(tekst.encode("ascii"))
             status = "BLAD: " + powod if powod else "GOTOWE"
             indeks.append(f'<tr><td><a href="{html.escape(nazwa)}">{html.escape(nazwa)}</a></td><td>{html.escape(status)}</td></tr>')
+    if args.historia:
+        katalog = Path(args.historia)
+        katalog.mkdir(parents=True, exist_ok=True)
+        (katalog / "STAN.txt").write_bytes(("GIELDA-HISTORIA-STAN 1\n" + czas_utc(teraz or datetime.now(timezone.utc)) + "\n").encode("ascii"))
+        output_github("historia", "tak")
     strona = ('<!doctype html>\n<html lang="pl"><meta charset="ascii"><title>Gielda - dane</title>'
               + '<h1>Gielda - dane</h1><p>aktualizacja_utc: ' + czas_utc(aktualizacja) + '</p><table>'
               + '<tr><th>Plik</th><th>Status</th></tr>' + "\n".join(indeks) + '</table></html>\n')
     (wyjscie / "index.html").write_bytes(strona.encode("ascii"))
     if udane:
         output_github("publikuj", "tak")
+    print(f"podsumowanie: zapytania={zapytan} gotowe={udane}/{len(indeks)} czas={time.monotonic() - start:.1f} s")
     return 0 if udane else 1
 
 
