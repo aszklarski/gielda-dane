@@ -134,6 +134,18 @@ def odpowiedz_na_wiersze(tekst):
         return "niepoprawna odpowiedz"
 
 
+def wyrownaj_strony(bid, ask):
+    if bid and ask and [w[0] for w in bid] != [w[0] for w in ask]:
+        poczatek = max(bid[0][0], ask[0][0])
+        koniec = min(bid[-1][0], ask[-1][0])
+        if any(sum(w[0] < poczatek for w in strona) > 2
+               or sum(w[0] > koniec for w in strona) > 2 for strona in (bid, ask)):
+            return bid, ask
+        bid = [w for w in bid if poczatek <= w[0] <= koniec]
+        ask = [w for w in ask if poczatek <= w[0] <= koniec]
+    return bid, ask
+
+
 def policz_mid(bid, ask, interwal):
     if not bid or [w[0] for w in bid] != [w[0] for w in ask]:
         return "niespojne dane BID/ASK"
@@ -344,7 +356,10 @@ def main(argv=None, otworz=urlopen, spij=time.sleep, teraz=None):
                 if args.historia:
                     plik_historii = Path(args.historia) / (instrument.replace("/", "") + "_1HOUR_MID.txt")
                     historia = wczytaj_historie(plik_historii, instrument)
-                    if len(historia) == pojemnosc:
+                    if historia and datetime.fromtimestamp(historia[-1][0] // 1000, timezone.utc) > aktualizacja:
+                        print(f"::warning::historia 1H {instrument}: wiersz z przyszlosci")
+                        historia = []
+                    if len(historia) >= pojemnosc - 48:
                         roznica = aktualizacja - datetime.fromtimestamp(historia[-1][0] // 1000, timezone.utc)
                         mikrosekundy = (roznica.days * 86400 + roznica.seconds) * 1000000 + roznica.microseconds
                         limit = max(1, -(-mikrosekundy // 3600000000) + 3)
@@ -396,7 +411,12 @@ def main(argv=None, otworz=urlopen, spij=time.sleep, teraz=None):
             if ny17 and wspolna is not None:
                 powod = wspolna if isinstance(wspolna, str) else None
             elif not powod:
-                mid = policz_mid(*strony, "1H" if ny17 else interwal)
+                bid, ask = wyrownaj_strony(*strony)
+                odrzucone_b, odrzucone_a = len(strony[0]) - len(bid), len(strony[1]) - len(ask)
+                if odrzucone_b or odrzucone_a:
+                    plik = nazwa_pliku(instrument, "1H" if ny17 else interwal)
+                    print(f"wyrownano BID/ASK {plik}: odrzucono B={odrzucone_b} A={odrzucone_a}")
+                mid = policz_mid(bid, ask, "1H" if ny17 else interwal)
                 if isinstance(mid, str):
                     powod = mid
                 elif ny17:
@@ -409,8 +429,9 @@ def main(argv=None, otworz=urlopen, spij=time.sleep, teraz=None):
                         powod = "historia 1H niespojna - pelne pobranie w nastepnym przebiegu"
                         plik_historii.unlink()
                     else:
-                        wspolna = (swieze if pelne else [w for w in historia if w[0] < swieze[0][0]] + swieze)[-pojemnosc:]
-                        if len(wspolna) < pojemnosc:
+                        wspolna = (swieze if pelne else [w for w in historia if w[0] < swieze[0][0]]
+                                   + swieze + [w for w in historia if w[0] > swieze[-1][0]])[-pojemnosc:]
+                        if pelne and len(wspolna) < pojemnosc - 2:
                             print(f"::warning::historia 1H {instrument}: {len(wspolna)} z {pojemnosc} wierszy")
                         if plik_historii is not None:
                             plik_historii.parent.mkdir(parents=True, exist_ok=True)
