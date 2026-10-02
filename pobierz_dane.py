@@ -15,7 +15,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 
-WERSJA = "0.0.15"
+WERSJA = "0.0.16"
 LIMIT_CZASU = 30
 BUDZET_PRZEBIEGU = 600
 MAPA_INTERWALOW = {
@@ -301,10 +301,21 @@ def main(argv=None, otworz=urlopen, spij=time.sleep, teraz=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--konfiguracja", default="konfiguracja.txt")
     parser.add_argument("--wyjscie", default="_site")
+    parser.add_argument("--wyniki-blad", help="zapisz błąd silnika bez konfiguracji i sieci")
     parser.add_argument("--ostatni-commit", default="")
     parser.add_argument("--blokada", help="plik znacznika blokady HTTP 403/429")
     parser.add_argument("--historia", help="katalog historii MID 1H")
     args = parser.parse_args(argv)
+    if args.wyniki_blad is not None:
+        powod = args.wyniki_blad.translate(str.maketrans('ąćęłńóśźżĄĆĘŁŃÓŚŹŻ', 'acelnoszzACELNOSZZ'))
+        powod = re.sub(r'[^A-Za-z0-9 :.,/=()+_?!-]', '-', powod) or 'brak powodu'
+        wyjscie = Path(args.wyjscie)
+        wyjscie.mkdir(parents=True, exist_ok=True)
+        tekst = ('GIELDA-WYNIKI 1\nkod: brak\npliki: brak\naktualizacja_utc: '
+                 + czas_utc(teraz or datetime.now(timezone.utc)) + '\nstatus: BLAD: ' + powod + '\n')
+        (wyjscie / 'wyniki.txt').write_bytes(tekst.encode('ascii'))
+        print('::warning::wyniki: ' + powod)
+        return 0
     output_github("publikuj", "nie")
     output_github("historia", "nie")
     aktualizacja = teraz or datetime.now(timezone.utc)
@@ -467,7 +478,7 @@ def main(argv=None, otworz=urlopen, spij=time.sleep, teraz=None):
         (katalog / "STAN.txt").write_bytes(("GIELDA-HISTORIA-STAN 1\n" + czas_utc(teraz or datetime.now(timezone.utc)) + "\n").encode("ascii"))
         output_github("historia", "tak")
     strona = ('<!doctype html>\n<html lang="pl"><meta charset="ascii"><title>Gielda - dane</title>'
-              + '<h1>Gielda - dane</h1><p>aktualizacja_utc: ' + czas_utc(aktualizacja) + '</p><table>'
+              + '<h1>Gielda - dane</h1><p><a href="wyniki.txt">wyniki.txt</a></p><p>aktualizacja_utc: ' + czas_utc(aktualizacja) + '</p><table>'
               + '<tr><th>Plik</th><th>Status</th></tr>' + "\n".join(indeks) + '</table></html>\n')
     (wyjscie / "index.html").write_bytes(strona.encode("ascii"))
     if udane:

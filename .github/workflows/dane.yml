@@ -93,9 +93,50 @@ jobs:
         with:
           path: historia
           key: historia-${{ github.run_id }}
+      - name: Analiza wszystkich par
+        if: steps.proba.outputs.uruchom == 'tak' && steps.pobierz.outputs.publikuj == 'tak'
+        env:
+          KLUCZ_SILNIKA: ${{ secrets.KLUCZ_SILNIKA }}
+        shell: bash
+        run: |
+          katalog="$RUNNER_TEMP/silnik"
+          trap 'rm -rf -- "$katalog"' EXIT
+          powod=""
+          if ! mkdir -m 700 "$katalog"; then
+            powod="silnik niedostepny (katalog)"
+          elif [ -z "$KLUCZ_SILNIKA" ] || [ ! -f silnik.gpg ]; then
+            powod="silnik niedostepny (paczka lub klucz)"
+          elif ! printf '%s' "$KLUCZ_SILNIKA" | gpg --batch --quiet --yes --pinentry-mode loopback --passphrase-fd 0 --decrypt --output "$katalog/paczka.tar.gz" silnik.gpg >/dev/null 2>&1; then
+            powod="silnik niedostepny (paczka lub klucz)"
+          elif ! tar -xzf "$katalog/paczka.tar.gz" -C "$katalog" >/dev/null 2>&1; then
+            powod="silnik niedostepny (paczka lub klucz)"
+          elif ! python3 -I "$katalog/silnik_wynikow.py" --instrukcje "$katalog" --dane _site/dane --wyjscie _site/wyniki.txt 2>/dev/null; then
+            powod="blad silnika"
+          fi
+          if [ -n "$powod" ]; then
+            python3 pobierz_dane.py --wyniki-blad "$powod" --wyjscie _site
+          fi
       - name: Konfiguracja Pages
         if: steps.proba.outputs.uruchom == 'tak' && steps.pobierz.outputs.publikuj == 'tak'
         uses: actions/configure-pages@v5
+      - name: Kontrola zawartości strony
+        if: steps.proba.outputs.uruchom == 'tak' && steps.pobierz.outputs.publikuj == 'tak'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import sys
+          root = Path('_site')
+          for p in root.rglob('*'):
+              nazwa = p.relative_to(root).as_posix()
+              if p.is_symlink() or not (
+                  p.is_dir() and p.stat().st_mode & 0o005 == 0o005 and nazwa == 'dane' or
+                  p.is_file() and p.stat().st_mode & 0o004 and (nazwa in ('index.html', 'wyniki.txt') or
+                                  p.parent == root / 'dane' and p.suffix == '.txt')
+              ):
+                  print('::error::niedozwolona zawartosc strony')
+                  sys.exit(1)
+          PY
       - name: Paczka strony
         if: steps.proba.outputs.uruchom == 'tak' && steps.pobierz.outputs.publikuj == 'tak'
         uses: actions/upload-pages-artifact@v4
