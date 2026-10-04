@@ -1,4 +1,4 @@
-# Dane Giełda v0.0.16
+# Dane Giełda v0.0.20
 
 Pliki świec MID (średnia BID i ASK) z Dukascopy dla projektu Giełda, aktualizowane przez budzik co 5 minut z harmonogramem GitHuba `*/5` jako zapasem (w praktyce co kilka godzin) i publikowane przez GitHub Pages. Dane nie są commitowane. Samo pobieranie nie wymaga kluczy; budzik używa tokenu Actions opisanego poniżej. W repozytorium są cztery jawne pliki: `pobierz_dane.py`, `konfiguracja.txt`, `README.md`, `.github/workflows/dane.yml` oraz zaszyfrowany `silnik.gpg`.
 
@@ -35,7 +35,7 @@ Przy pełnym cache limit to liczba godzin od najnowszej świecy zaokrąglona w g
 Dla 28 instrumentów 1HOUR jest pobierany raz na instrument wspólnie dla 4H/1D: 56 zapytań 1HOUR + 56 zapytań 15MIN = 112 zamiast 168. Z pełnym cache szacunkowo około 0,5 MB i 5–6 minut; pierwszy przebieg około 14 MB i może przekroczyć budżet 600 s. Pobrane historie są zachowywane, więc kolejne przebiegi odświeżają je małymi zapytaniami i inicjalizują następne instrumenty. Liczba przebiegów do 84/84 GOTOWE nie jest gwarantowana; utrata cache powtarza inicjalizację. Postęp jest w `index.html` i końcowej linii `podsumowanie: zapytania=<n> gotowe=<k>/<m> czas=<s> s`.
 
 ## Wyniki analizy
-Strona główna zawiera link do `wyniki.txt` (`GIELDA-WYNIKI 1`). Po pobraniu świec workflow odszyfrowuje `silnik.gpg` kluczem z sekretu Actions `KLUCZ_SILNIKA` i liczy wyniki wszystkich par. Kod oraz strategie są prywatne; do repozytorium i jego historii trafia wyłącznie szyfr, nigdy jawna paczka ani klucz. Szyfr aktualizuje narzędzie z prywatnego projektu; nie edytuj go ręcznie.
+Strona główna zawiera link do `wyniki.txt` (`GIELDA-WYNIKI 2`). Po pobraniu świec workflow odszyfrowuje `silnik.gpg` kluczem z sekretu Actions `KLUCZ_SILNIKA` i liczy wyniki wszystkich par. Kod oraz strategie są prywatne; do repozytorium i jego historii trafia wyłącznie szyfr, nigdy jawna paczka ani klucz. Szyfr aktualizuje narzędzie z prywatnego projektu; nie edytuj go ręcznie.
 
 Odszyfrowany katalog leży w `$RUNNER_TEMP/silnik`, poza stroną i checkoutem, jest usuwany po analizie i nie trafia do cache ani artefaktów. Log zawiera tylko liczbę wierszy i błędów, czas oraz skróty kodu i plików. Brak klucza/paczki albo błąd odszyfrowania daje plik błędu `silnik niedostepny (paczka lub klucz)`; błąd silnika również daje plik błędu zamiast starych wyników. Przed publikacją dozwolone są tylko `index.html`, `wyniki.txt` i `dane/*.txt`. Nie dodawaj wyzwalacza `pull_request` udostępniającego sekret.
 

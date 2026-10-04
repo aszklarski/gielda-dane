@@ -15,7 +15,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 
-WERSJA = "0.0.16"
+WERSJA = "0.0.20"
 LIMIT_CZASU = 30
 BUDZET_PRZEBIEGU = 600
 MAPA_INTERWALOW = {
@@ -311,7 +311,7 @@ def main(argv=None, otworz=urlopen, spij=time.sleep, teraz=None):
         powod = re.sub(r'[^A-Za-z0-9 :.,/=()+_?!-]', '-', powod) or 'brak powodu'
         wyjscie = Path(args.wyjscie)
         wyjscie.mkdir(parents=True, exist_ok=True)
-        tekst = ('GIELDA-WYNIKI 1\nkod: brak\npliki: brak\naktualizacja_utc: '
+        tekst = ('GIELDA-WYNIKI 2\nkod: brak\npliki: brak\naktualizacja_utc: '
                  + czas_utc(teraz or datetime.now(timezone.utc)) + '\nstatus: BLAD: ' + powod + '\n')
         (wyjscie / 'wyniki.txt').write_bytes(tekst.encode('ascii'))
         print('::warning::wyniki: ' + powod)
