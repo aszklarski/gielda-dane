@@ -80,7 +80,7 @@ jobs:
       - name: Pobranie świec z Dukascopy
         id: pobierz
         if: steps.proba.outputs.uruchom == 'tak'
-        run: python3 pobierz_dane.py --konfiguracja konfiguracja.txt --wyjscie _site --blokada blokada/czas.txt --historia historia --ostatni-commit "$(git log -1 --format=%cI)"
+        run: python3 pobierz_dane.py --konfiguracja konfiguracja.txt --wyjscie _site --blokada blokada/czas.txt --historia historia --pelne pelne --ostatni-commit "$(git log -1 --format=%cI)"
       - name: Zachowanie nowej blokady
         if: always() && steps.proba.outputs.uruchom == 'tak' && steps.pobierz.outputs.blokada == 'tak'
         uses: actions/cache/save@v4
@@ -110,7 +110,7 @@ jobs:
             powod="silnik niedostepny (paczka lub klucz)"
           elif ! tar -xzf "$katalog/paczka.tar.gz" -C "$katalog" >/dev/null 2>&1; then
             powod="silnik niedostepny (paczka lub klucz)"
-          elif ! python3 -I "$katalog/silnik_wynikow.py" --instrukcje "$katalog" --dane _site/dane --wyjscie _site/wyniki.txt 2>/dev/null; then
+          elif ! python3 -I "$katalog/silnik_wynikow.py" --instrukcje "$katalog" --dane _site/dane --pelne pelne --wyjscie _site/wyniki.txt 2>/dev/null; then
             powod="blad silnika"
           fi
           if [ -n "$powod" ]; then
