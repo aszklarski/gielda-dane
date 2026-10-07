@@ -17,6 +17,7 @@ jobs:
       actions: read
     outputs:
       uruchom: ${{ steps.bezpiecznik.outputs.uruchom }}
+      utworzony: ${{ steps.bezpiecznik.outputs.utworzony }}
     steps:
       - name: Pomiń ponowienia i nakładające się przebiegi
         id: bezpiecznik
@@ -25,17 +26,49 @@ jobs:
         shell: bash
         run: |
           echo "uruchom=nie" >> "$GITHUB_OUTPUT"
-          if [ "$GITHUB_RUN_ATTEMPT" -gt 1 ]; then
-            echo "ponowienie wyłączone — uruchom nowy przebieg przez Run workflow"
-            exit 0
+          if [ "$GITHUB_RUN_ATTEMPT" -le 1 ]; then
+            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/dane.yml/runs?per_page=100" > runs.json
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > moj.json
           fi
-          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/dane.yml/runs?per_page=100" > runs.json
-          poprzednie=$(jq --argjson id "$GITHUB_RUN_ID" -s '[.[].workflow_runs[] | select(.id < $id and .status != "completed")] | length' runs.json)
-          if [ "$poprzednie" -gt 0 ]; then
-            echo "poprzedni przebieg jeszcze trwa"
-            exit 0
-          fi
-          echo "uruchom=tak" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timedelta, timezone
+
+          SWIEZOSC = 600
+          OKNO = 1800
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as wyjscie:
+              print('uruchom=nie', file=wyjscie, flush=True)
+              if int(os.environ['GITHUB_RUN_ATTEMPT']) > 1:
+                  print('ponowienie wyłączone — uruchom nowy przebieg przez Run workflow')
+              else:
+                  with open('moj.json', encoding='utf-8') as plik:
+                      moj = datetime.fromisoformat(json.load(plik)['created_at'].replace('Z', '+00:00'))
+                  with open('runs.json', encoding='utf-8') as plik:
+                      przebiegi = json.load(plik)['workflow_runs']
+                  if not isinstance(przebiegi, list):
+                      raise ValueError('workflow_runs musi być listą')
+                  identyfikator = int(os.environ['GITHUB_RUN_ID'])
+                  print(f'utworzony={int(moj.timestamp())}', file=wyjscie, flush=True)
+                  if (datetime.now(timezone.utc) - moj).total_seconds() > SWIEZOSC:
+                      print('::warning::przebieg czekał ponad 10 min od utworzenia — pomijam')
+                  else:
+                      blokujace = []
+                      for przebieg in przebiegi:
+                          utworzony = datetime.fromisoformat(przebieg['created_at'].replace('Z', '+00:00'))
+                          if (type(przebieg['id']) is not int or not isinstance(przebieg['status'], str)
+                                  or not przebieg['status'] or utworzony.tzinfo is None):
+                              raise ValueError('niepoprawne dane przebiegu')
+                          if przebieg['id'] < identyfikator and przebieg['status'] != 'completed':
+                              if utworzony >= moj - timedelta(seconds=OKNO):
+                                  blokujace.append(przebieg)
+                              else:
+                                  print(f"::warning::przebieg {przebieg['id']} ({przebieg['status']}, od {przebieg['created_at']}) wisi ponad 30 min — nie blokuje; anuluj go ręcznie w Actions")
+                      if blokujace:
+                          print('poprzedni przebieg jeszcze trwa')
+                      else:
+                          print('uruchom=tak', file=wyjscie)
+          PY
 
   dane:
     needs: sprawdz
@@ -52,14 +85,24 @@ jobs:
     steps:
       - name: Niezależna blokada ponowienia jobu
         id: proba
+        env:
+          UTWORZONY: ${{ needs.sprawdz.outputs.utworzony }}
         shell: bash
         run: |
-          if [ "$GITHUB_RUN_ATTEMPT" -gt 1 ]; then
-            echo "ponowienie wyłączone — uruchom nowy przebieg przez Run workflow"
-            echo "uruchom=nie" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "uruchom=tak" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY'
+          import os
+          from datetime import datetime, timezone
+
+          SWIEZOSC = 600
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as wyjscie:
+              print('uruchom=nie', file=wyjscie, flush=True)
+              if int(os.environ['GITHUB_RUN_ATTEMPT']) > 1:
+                  print('ponowienie wyłączone — uruchom nowy przebieg przez Run workflow')
+              elif datetime.now(timezone.utc).timestamp() - int(os.environ['UTWORZONY']) > SWIEZOSC:
+                  print('::warning::job dane ruszył ponad 10 min po utworzeniu przebiegu (oczekiwanie na środowisko lub maszynę) — pomijam bez pobierania i publikacji')
+              else:
+                  print('uruchom=tak', file=wyjscie)
+          PY
       - name: Pobranie repozytorium
         if: steps.proba.outputs.uruchom == 'tak'
         uses: actions/checkout@v6

@@ -10,18 +10,18 @@ Instrumenty, interwały i liczbę świec zmieniaj w `konfiguracja.txt`. Adres st
 
 GitHub wyłącza harmonogram publicznego repozytorium po 60 dniach bez aktywności. Co około 50 dni wykonaj dowolny commit, np. edytuj ten README. Po wyłączeniu otwórz Actions → Enable workflow. Nie ma sztucznych commitów ani automatycznego podtrzymania.
 
-**Ostrzeżenie:** 112 zapytań na pełny przebieg; budzik co 5 min to około 32 tys. na dobę, a harmonogram `*/5` teoretycznie do około 32 tys. na dobę to duże obciążenie serwisu, który blokuje boty; ryzyko blokady ponosi użytkownik.
+**Ostrzeżenie:** 116 zapytań na pełny przebieg; budzik co 5 min to około 33 tys. na dobę, a harmonogram `*/5` teoretycznie do około 33 tys. na dobę to duże obciążenie serwisu, który blokuje boty; ryzyko blokady ponosi użytkownik.
 
-Bezpiecznik 1: job `sprawdz` pyta API Actions o starsze, niezakończone przebiegi `dane.yml`. Gdy poprzedni przebieg jeszcze trwa, nowy kończy się bez pobierania, bez kolejki. Ponowienia są wyłączone zarówno w `sprawdz`, jak i niezależnie w pierwszym kroku jobu `dane`; uruchom nowy przebieg przez Run workflow.
+Bezpiecznik 1: job `sprawdz` pyta API Actions o starsze, niezakończone przebiegi `dane.yml`. Blokują tylko przebiegi utworzone najwyżej 30 minut przed bieżącym; starsze są pomijane z ostrzeżeniem w logu `sprawdz`. Wiszący przebieg nadal anuluj ręcznie w Actions. Przebieg pracuje tylko, gdy `sprawdz` i job `dane` ruszą najwyżej 10 minut po jego utworzeniu; po dłuższym oczekiwaniu kończy się bez pobierania, zapisu cache i publikacji. Ponowienia są wyłączone zarówno w `sprawdz`, jak i niezależnie w pierwszym kroku jobu `dane`; uruchom nowy przebieg przez Run workflow. `timeout-minutes` nie obejmuje oczekiwania na maszynę ani środowisko.
 
 Bezpiecznik 2: po HTTP 403/429 skrypt zapisuje czas UTC i kod w `blokada/czas.txt`, zachowywanym w cache Actions. Przez 60 minut od znacznika nie wykonuje zapytań, nie tworzy plików danych i nie publikuje (`publikuj=nie`, kod 0). Po tym czasie zwykły przebieg może wznowić pobieranie. Co najmniej jedna udana para pozwala opublikować częściowy wynik; bez udanych par kod 1 i brak publikacji.
 Uszkodzony znacznik blokady jest pomijany z ostrzeżeniem, a pobieranie odbywa się normalnie.
 
-Budżet przebiegu to 600 s, timeout zapytania 30 s, przerwa 1 s; brak ponowień. Po wyczerpaniu budżetu pozostałe pary dostają `BLAD: przerwano: limit czasu przebiegu` bez zapytań. Limit jobu: 15 minut. Przy stale wolnym źródle (> ok. 4,4 s na odpowiedź: 600 s budżetu na 112 zapytań minus 1 s przerwy) końcowe pary mogą stale mieć BLAD: skróć listę albo zmniejsz liczbę interwałów. Rotacja i przenoszenie ostatnich poprawnych plików pozostają poza zakresem.
+Budżet przebiegu to 600 s, timeout zapytania 30 s, przerwa 1 s; brak ponowień. Po wyczerpaniu budżetu pozostałe pary dostają `BLAD: przerwano: limit czasu przebiegu` bez zapytań. Limit jobu: 15 minut. Przy stale wolnym źródle (> ok. 4,2 s na odpowiedź: 600 s budżetu na 116 zapytań minus 1 s przerwy) końcowe pary mogą stale mieć BLAD: skróć listę albo zmniejsz liczbę interwałów. Rotacja i przenoszenie ostatnich poprawnych plików pozostają poza zakresem.
 
-Konfiguracja: 28 instrumentów × 1D, 4H, 15m = 84 pliki, po 150 świec; maksymalnie 90 par. Przykłady: `dane/EURUSD_4HOUR.txt`, `dane/EURUSD_15MIN.txt`.
+Konfiguracja: 29 instrumentów × 1D, 4H, 15m = 87 plików, po 150 świec; maksymalnie 90 par. Przykłady: `dane/EURUSD_4HOUR.txt`, `dane/EURUSD_15MIN.txt`.
 
-Budzik tworzy nowy przebieg REST API (`workflow_dispatch`, `run_attempt = 1`), więc przechodzi obie blokady ponowień. Przy nakładaniu nowy przebieg kończy się bez pobierania, a starszy trwający dostarcza dane, bez kolejki. Job `sprawdz` ma limit 2 minut, job `dane` 15 minut. Przebieg wiszący w kolejce GitHuba na maszynę nadal blokuje następców aż do startu (GitHub anuluje go po 24 h): anuluj go ręcznie w Actions. Bezpiecznik 60 minut po 403/429 obowiązuje także budzik.
+Budzik tworzy nowy przebieg REST API (`workflow_dispatch`, `run_attempt = 1`), więc przechodzi obie blokady ponowień. Przy nakładaniu niedawny starszy przebieg blokuje pobieranie. Zawieszony przebieg przestaje blokować po ok. 30 minutach od utworzenia (granica dokładnie 30 minut jeszcze blokuje; przy budziku co 5 minut wznowienie zwykle po ok. 30–35 minutach). Ostrzeżenie jest w logu `sprawdz`; wiszący przebieg anuluj ręcznie w Actions. Zarówno `sprawdz`, jak i job `dane` odmawiają pracy po ponad 10 minutach od utworzenia przebiegu. Przy kolejce GitHuba dłuższej niż 10 minut dane wrócą, gdy kolejka zmaleje. Job `sprawdz` ma limit 2 minut, job `dane` 15 minut; `timeout-minutes` nie liczy oczekiwania na maszynę ani środowisko. Bezpiecznik 60 minut po 403/429 obowiązuje także budzik.
 
 ## Świece NY17 i historia 1H
 4H i 1D powstają z MID świec `1HOUR` (dokładna średnia BID i ASK dla każdej godziny). Doba zaczyna się o 17:00 Nowego Jorku: 4H o 17, 21, 1, 5, 9 i 13 NY; 1D o 17 NY poprzedniego dnia sesji. Niedzielny wieczór należy do poniedziałku. Czas USA jest liczony regułą obowiązującą od 2007: druga niedziela marca, pierwsza niedziela listopada. Puste koszyki nie tworzą świec, najstarszy koszyk jest odrzucany, ostatni może być niepełny. Pozostałe interwały, w tym 15m, zachowują natywne świece i siatkę UTC.
@@ -32,7 +32,7 @@ Workflow odtwarza cache `historia-` i uruchamia publikator z `--historia histori
 
 Ogon pustego cache: `limit=min(5000,pojemność)`; istniejącego: sufit czasu od najnowszej świecy podzielonego przez krok plus 3. Limit większy od 5000 oznacza pełne pobranie. Brzegi BID/ASK wyrównujemy jak dotąd, z logiem `wyrownano BID/ASK`. Brak nakładki świeżego ogona z cache powoduje błąd i usunięcie cache; następny przebieg pobiera pełny ogon. Po scaleniu mniej niż pojemność minus 48 wierszy uruchamia najwyżej jedno dociąganie BID/ASK: znacznik najstarszej świecy minus 1 ms, limit do 5000 brakujących wierszy. Dopisywane są wyłącznie starsze świece; błąd daje ostrzeżenie bez ponowienia. Blokada 403/429 zatrzymuje dalsze zapytania. Zawsze przycinamy do pojemności.
 
-Przy pełnym cache jest 112 zapytań na przebieg (28 symboli × 2 bazy × BID/ASK). Zimny albo krótki cache dodaje najwyżej 2 zapytania na bazę i symbol (maksymalnie 224 łącznie). 1H po zimnym starcie potrzebuje ogona 5000 i jednej strony do 4600; 15m może zapełnić się z jednego ogona 2000. Liczby zależą od długości odpowiedzi dostawcy i dostępnego budżetu czasu.
+Przy pełnym cache jest 116 zapytań na przebieg (29 symboli × 2 bazy × BID/ASK). Zimny albo krótki cache dodaje najwyżej 2 zapytania na bazę i symbol (maksymalnie 232 łącznie). 1H po zimnym starcie potrzebuje ogona 5000 i jednej strony do 4600; 15m może zapełnić się z jednego ogona 2000. Dla samego nowego AUDCHF przy pełnym cache pozostałych instrumentów pierwszy przebieg wymaga 118 zapytań, kolejne 116. Liczby zależą od długości odpowiedzi dostawcy i dostępnego budżetu czasu.
 
 Pliki Pages zawierają ostatnie 150 świec. Katalog `pelne/` zawiera wszystkie świece i nie trafia na Pages ani do cache. Silnik z `--pelne pelne` dopisuje zweryfikowany stan do plików okna, a dopiero potem liczy `wyniki.txt`. Log `stany:` podaje liczby stanów, czas, długości historii i przełamania przed oknem. Brak odpowiednika, krótka historia albo różne parametry aktywnych strategii pozostawiają `stan: brak`.
 
@@ -41,7 +41,7 @@ Strona główna zawiera link do `wyniki.txt` (`GIELDA-WYNIKI 2`). Po pobraniu ś
 
 Odszyfrowany katalog leży w `$RUNNER_TEMP/silnik`, poza stroną i checkoutem, jest usuwany po analizie i nie trafia do cache ani artefaktów. Log zawiera tylko liczbę wierszy i błędów, czas oraz skróty kodu i plików. Brak klucza/paczki albo błąd odszyfrowania daje plik błędu `silnik niedostepny (paczka lub klucz)`; błąd silnika również daje plik błędu zamiast starych wyników. Przed publikacją dozwolone są tylko `index.html`, `wyniki.txt` i `dane/*.txt`. Nie dodawaj wyzwalacza `pull_request` udostępniającego sekret.
 
-Skróty `kod` i `pliki` z nagłówka porównaj z `diagnostyka` w ChatGPT. Świece mają format `GIELDA-DANE 3`; analiza nie dodaje zapytań do źródła. Linia `wyniki:` pozwala zmierzyć sam czas analizy, `podsumowanie:` — pobieranie (112 zapytań przy pełnej konfiguracji).
+Skróty `kod` i `pliki` z nagłówka porównaj z `diagnostyka` w ChatGPT. Świece mają format `GIELDA-DANE 3`; analiza nie dodaje zapytań do źródła. Linia `wyniki:` pozwala zmierzyć sam czas analizy, `podsumowanie:` — pobieranie (116 zapytań przy pełnej konfiguracji).
 
 ## Budzik (cron-job.org)
 1. Utwórz token fine-grained w GitHub: Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token. Wpisz nazwę i ważność około roku. Repository access: Only select repositories → `aszklarski/gielda-dane`. Permissions: Actions = Read and write, pozostałe brak; GitHub obowiązkowo dodaje Metadata: Read-only. Skopiuj token teraz — jest pokazywany tylko raz.
@@ -52,7 +52,7 @@ Skróty `kod` i `pliki` z nagłówka porównaj z `diagnostyka` w ChatGPT. Świec
    - `X-GitHub-Api-Version: 2022-11-28`
    - zalecany `Content-Type: application/json`
    Treść żądania: `{"ref":"main"}`. Oczekiwana odpowiedź: **204**.
-4. Sprawdź „Test run” w cron-job.org → 204. W GitHub → Actions → Dane Giełda powinien pojawić się nowy przebieg ze zdarzeniem `workflow_dispatch`. Po zakończeniu sprawdź `index.html` z nowym `aktualizacja_utc` i 84 plikami GOTOWE.
+4. Sprawdź „Test run” w cron-job.org → 204. W GitHub → Actions → Dane Giełda powinien pojawić się nowy przebieg ze zdarzeniem `workflow_dispatch`. Po zakończeniu sprawdź `index.html` z nowym `aktualizacja_utc` i 87 plikami GOTOWE.
 
 Awarie:
 - 401 → token wygasł lub jest błędny; utwórz nowy i podmień nagłówek.
