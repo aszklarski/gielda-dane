@@ -1,0 +1,307 @@
+# W repozytorium danych umieść jako .github/workflows/dane.yml.
+name: Dane Giełda
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sprawdz:
+    timeout-minutes: 2
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      uruchom: ${{ steps.bezpiecznik.outputs.uruchom }}
+      utworzony: ${{ steps.bezpiecznik.outputs.utworzony }}
+    steps:
+      - name: Pomiń ponowienia i nakładające się przebiegi
+        id: bezpiecznik
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          echo "uruchom=nie" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_RUN_ATTEMPT" -le 1 ]; then
+            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/dane.yml/runs?per_page=100" > runs.json
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > moj.json
+          fi
+          python3 - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timedelta, timezone
+
+          SWIEZOSC = 600
+          OKNO = 1800
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as wyjscie:
+              print('uruchom=nie', file=wyjscie, flush=True)
+              if int(os.environ['GITHUB_RUN_ATTEMPT']) > 1:
+                  print('ponowienie wyłączone — uruchom nowy przebieg przez Run workflow')
+              else:
+                  with open('moj.json', encoding='utf-8') as plik:
+                      moj = datetime.fromisoformat(json.load(plik)['created_at'].replace('Z', '+00:00'))
+                  with open('runs.json', encoding='utf-8') as plik:
+                      przebiegi = json.load(plik)['workflow_runs']
+                  if not isinstance(przebiegi, list):
+                      raise ValueError('workflow_runs musi być listą')
+                  identyfikator = int(os.environ['GITHUB_RUN_ID'])
+                  print(f'utworzony={int(moj.timestamp())}', file=wyjscie, flush=True)
+                  if (datetime.now(timezone.utc) - moj).total_seconds() > SWIEZOSC:
+                      print('::warning::przebieg czekał ponad 10 min od utworzenia — pomijam')
+                  else:
+                      blokujace = []
+                      for przebieg in przebiegi:
+                          utworzony = datetime.fromisoformat(przebieg['created_at'].replace('Z', '+00:00'))
+                          if (type(przebieg['id']) is not int or not isinstance(przebieg['status'], str)
+                                  or not przebieg['status'] or utworzony.tzinfo is None):
+                              raise ValueError('niepoprawne dane przebiegu')
+                          if przebieg['id'] < identyfikator and przebieg['status'] != 'completed':
+                              if utworzony >= moj - timedelta(seconds=OKNO):
+                                  blokujace.append(przebieg)
+                              else:
+                                  print(f"::warning::przebieg {przebieg['id']} ({przebieg['status']}, od {przebieg['created_at']}) wisi ponad 30 min — nie blokuje; anuluj go ręcznie w Actions")
+                      if blokujace:
+                          print('poprzedni przebieg jeszcze trwa')
+                      else:
+                          print('uruchom=tak', file=wyjscie)
+          PY
+
+  wersja:
+    needs: sprawdz
+    if: needs.sprawdz.outputs.uruchom == 'tak'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - name: Commit wdrożenia bez aktualizacji ref
+        id: commit
+        uses: actions/github-script@v9
+        with:
+          script: |
+            try {
+              const sha = process.env.GITHUB_SHA;
+              const parametry = () => ({...context.repo, request: {signal: AbortSignal.timeout(30000)}});
+              const commit = await github.request('GET /repos/{owner}/{repo}/git/commits/{sha}', {
+                ...parametry(), sha
+              });
+              const tree = commit.data?.tree?.sha;
+              if (typeof tree !== 'string' || tree.length !== 40 || !/^[0-9a-f]{40}$/.test(tree)) {
+                throw new Error('niepoprawna odpowiedź GET commita: ' + JSON.stringify(commit.data));
+              }
+              const odpowiedz = await github.request('POST /repos/{owner}/{repo}/git/commits', {
+                ...parametry(), message: 'Pages: przebieg ' + process.env.GITHUB_RUN_ID, tree, parents: [sha]
+              });
+              const wersja = odpowiedz.data?.sha;
+              if (typeof wersja !== 'string' || wersja.length !== 40 || !/^[0-9a-f]{40}$/.test(wersja) || wersja === sha) {
+                throw new Error('niepoprawna odpowiedź POST commita: ' + JSON.stringify(odpowiedz.data));
+              }
+              core.setOutput('sha', wersja);
+              core.info('commit wdrożenia ' + wersja + ' (bez aktualizacji ref)');
+            } catch (blad) {
+              core.warning('commit wdrożenia: HTTP ' + (blad.status || 'brak') + ': ' +
+                JSON.stringify(blad.response?.data ?? blad.message));
+            }
+
+  dane:
+    needs: [sprawdz, wersja]
+    if: ${{ !cancelled() && needs.sprawdz.result == 'success' && needs.sprawdz.outputs.uruchom == 'tak' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.wdrozenie.outputs.page_url }}
+    steps:
+      - name: Niezależna blokada ponowienia jobu
+        id: proba
+        env:
+          UTWORZONY: ${{ needs.sprawdz.outputs.utworzony }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          from datetime import datetime, timezone
+
+          SWIEZOSC = 600
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as wyjscie:
+              print('uruchom=nie', file=wyjscie, flush=True)
+              if int(os.environ['GITHUB_RUN_ATTEMPT']) > 1:
+                  print('ponowienie wyłączone — uruchom nowy przebieg przez Run workflow')
+              elif datetime.now(timezone.utc).timestamp() - int(os.environ['UTWORZONY']) > SWIEZOSC:
+                  print('::warning::job dane ruszył ponad 10 min po utworzeniu przebiegu (oczekiwanie na środowisko lub maszynę) — pomijam bez pobierania i publikacji')
+              else:
+                  print('uruchom=tak', file=wyjscie)
+          PY
+      - name: Pobranie repozytorium
+        if: steps.proba.outputs.uruchom == 'tak'
+        uses: actions/checkout@v6
+      - name: Odtworzenie znacznika blokady
+        if: steps.proba.outputs.uruchom == 'tak'
+        uses: actions/cache/restore@v4
+        with:
+          path: blokada
+          key: blokada-${{ github.run_id }}
+          restore-keys: blokada-
+      - name: Odtworzenie historii 1H
+        if: steps.proba.outputs.uruchom == 'tak'
+        uses: actions/cache/restore@v4
+        with:
+          path: historia
+          key: historia-${{ github.run_id }}
+          restore-keys: historia-
+      - name: Pobranie świec z Dukascopy
+        id: pobierz
+        if: steps.proba.outputs.uruchom == 'tak'
+        run: python3 pobierz_dane.py --konfiguracja konfiguracja.txt --wyjscie _site --blokada blokada/czas.txt --historia historia --ostatni-commit "$(git log -1 --format=%cI)"
+      - name: Zachowanie nowej blokady
+        if: always() && steps.proba.outputs.uruchom == 'tak' && steps.pobierz.outputs.blokada == 'tak'
+        uses: actions/cache/save@v4
+        with:
+          path: blokada
+          key: blokada-${{ github.run_id }}
+      - name: Zachowanie historii 1H
+        if: always() && steps.proba.outputs.uruchom == 'tak' && steps.pobierz.outputs.historia == 'tak'
+        uses: actions/cache/save@v4
+        with:
+          path: historia
+          key: historia-${{ github.run_id }}
+      - name: Konfiguracja Pages
+        if: steps.proba.outputs.uruchom == 'tak' && steps.pobierz.outputs.publikuj == 'tak'
+        uses: actions/configure-pages@v5
+      - name: Kontrola zawartości strony
+        if: steps.proba.outputs.uruchom == 'tak' && steps.pobierz.outputs.publikuj == 'tak'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import sys
+          root = Path('_site')
+          for p in root.rglob('*'):
+              nazwa = p.relative_to(root).as_posix()
+              if p.is_symlink() or not (
+                  p.is_dir() and p.stat().st_mode & 0o005 == 0o005 and nazwa == 'dane' or
+                  p.is_file() and p.stat().st_mode & 0o004 and (nazwa == 'index.html' or
+                                  p.parent == root / 'dane' and p.suffix == '.txt')
+              ):
+                  print('::error::niedozwolona zawartosc strony')
+                  sys.exit(1)
+          PY
+      - name: Paczka strony
+        id: paczka
+        if: steps.proba.outputs.uruchom == 'tak' && steps.pobierz.outputs.publikuj == 'tak'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+      - name: Publikacja
+        id: wdrozenie
+        if: steps.proba.outputs.uruchom == 'tak' && steps.pobierz.outputs.publikuj == 'tak'
+        uses: actions/github-script@v9
+        env:
+          ARTIFACT_ID: ${{ steps.paczka.outputs.artifact_id }}
+          WERSJA: ${{ needs.wersja.outputs.sha }}
+          UTWORZONY: ${{ needs.sprawdz.outputs.utworzony }}
+        with:
+          script: |
+            // Token OIDC nie jest logowany, nawet gdy API zwroci go w bledzie.
+            let oidc;
+            const bezTokenu = tekst => oidc ? String(tekst).split(oidc).join('[OIDC]') : String(tekst);
+            const opisBledu = blad => bezTokenu('HTTP ' + (blad.status || 'brak') + ': ' +
+              JSON.stringify(blad.response?.data ?? blad.message));
+            try {
+              const surowy = process.env.ARTIFACT_ID || '';
+              const artifact = Number(surowy);
+              if (!/^[0-9]+$/.test(surowy) || !Number.isSafeInteger(artifact) || artifact <= 0) {
+                core.setFailed('niepoprawny ARTIFACT_ID');
+                return;
+              }
+              oidc = await core.getIDToken();
+              const sha = process.env.GITHUB_SHA;
+              let wersja = process.env.WERSJA;
+              if (typeof wersja !== 'string' || wersja.length !== 40 || !/^[0-9a-f]{40}$/.test(wersja) || wersja === sha) {
+                core.warning('brak commita wdrożenia z jobu wersja; używam GITHUB_SHA');
+                wersja = sha;
+              }
+              const parametry = () => ({...context.repo, request: {signal: AbortSignal.timeout(30000)}});
+              const utworz = async () => {
+                core.info('pages_build_version=' + wersja + ' artifact_id=' + artifact);
+                return await github.request('POST /repos/{owner}/{repo}/pages/deployments', {
+                  ...parametry(), artifact_id: artifact, pages_build_version: wersja, oidc_token: oidc
+                });
+              };
+              let odpowiedz;
+              try {
+                odpowiedz = await utworz();
+              } catch (blad) {
+                if (wersja === sha || !(blad.status >= 400 && blad.status <= 499)) throw blad;
+                core.warning(opisBledu(blad));
+                wersja = sha;
+                odpowiedz = await utworz();
+              }
+              const utworzono = Date.now();
+              const data = odpowiedz.data;
+              const id = data.id || (data.status_url || '').split('/').filter(Boolean).pop() || wersja;
+              core.setOutput('page_url', typeof data.page_url === 'string' ? bezTokenu(data.page_url) : data.page_url);
+              core.info(bezTokenu('Utworzono wdrożenie ' + wersja + ' ID: ' + id));
+              let termin = utworzono + 600000;
+              const surowyCzas = process.env.UTWORZONY || '';
+              const czas = Number(surowyCzas);
+              if (/^[0-9]+$/.test(surowyCzas) && Number.isSafeInteger(czas) && czas > 0) {
+                termin = Math.min(termin, czas * 1000 + 840000);
+              } else {
+                core.warning('niepoprawny UTWORZONY; limit wdrożenia 600 s');
+              }
+              const anuluj = async () => {
+                try {
+                  await github.request('POST /repos/{owner}/{repo}/pages/deployments/{id}/cancel', {
+                    ...parametry(), id
+                  });
+                } catch (blad) {
+                  core.warning('anulowanie: ' + opisBledu(blad));
+                }
+                core.setFailed('przekroczony czas wdrożenia');
+              };
+              let bledy = 0;
+              while (true) {
+                if (Date.now() >= termin) { await anuluj(); return; }
+                await new Promise(resolve => setTimeout(resolve, Math.min(5000, termin - Date.now())));
+                if (Date.now() >= termin) { await anuluj(); return; }
+                let status;
+                try {
+                  const wynik = await github.request('GET /repos/{owner}/{repo}/pages/deployments/{id}', {
+                    ...parametry(), id
+                  });
+                  status = wynik.data.status;
+                  bledy = 0;
+                } catch (blad) {
+                  core.warning(opisBledu(blad));
+                  if (++bledy >= 10) {
+                    core.setFailed('10 kolejnych błędów odpytywania wdrożenia');
+                    return;
+                  }
+                  continue;
+                }
+                if (status === 'succeed') { core.info('Reported success!'); return; }
+                if (['deployment_failed', 'deployment_perms_error', 'deployment_content_failed',
+                     'deployment_cancelled', 'deployment_lost'].includes(status)) {
+                  core.setFailed('błąd wdrożenia: ' + status);
+                  return;
+                }
+                if (['unknown_status', 'not_found', 'deployment_attempt_error'].includes(status)) {
+                  core.warning('Current status: ' + status);
+                } else {
+                  core.info(bezTokenu('Current status: ' + status));
+                }
+              }
+            } catch (blad) {
+              core.setFailed(opisBledu(blad));
+            }
