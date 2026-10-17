@@ -77,8 +77,8 @@ def wczytaj_konfiguracje(tekst):
         bledy.append("adres_strony: adres niezgodny z regułą D39")
     v = konf.get("swiece", "")
     cyfry = v.lstrip("0")
-    if not re.fullmatch(r"[0-9]+", v) or not 1 <= len(cyfry) <= 3 or not 50 <= int(cyfry) <= 300:
-        bledy.append("swiece: wymagana liczba całkowita 50–300")
+    if not re.fullmatch(r"[0-9]+", v) or not 1 <= len(cyfry) <= 3 or not 50 <= int(cyfry) <= 383:
+        bledy.append("swiece: wymagana liczba całkowita 50–383")
     else:
         konf["swiece"] = int(cyfry)
     for k in ("instrumenty", "interwaly"):

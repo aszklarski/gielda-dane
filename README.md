@@ -19,7 +19,7 @@ Uszkodzony znacznik blokady jest pomijany z ostrzeżeniem, a pobieranie odbywa s
 
 Budżet przebiegu to 600 s, timeout zapytania 30 s, przerwa 1 s; brak ponowień. Po wyczerpaniu budżetu pozostałe pary dostają `BLAD: przerwano: limit czasu przebiegu` bez zapytań. Limit jobu: 15 minut. Przy stale wolnym źródle (> ok. 4,2 s na odpowiedź: 600 s budżetu na 116 zapytań minus 1 s przerwy) końcowe pary mogą stale mieć BLAD: skróć listę albo zmniejsz liczbę interwałów. Rotacja i przenoszenie ostatnich poprawnych plików pozostają poza zakresem.
 
-Konfiguracja: 29 instrumentów × 1D, 4H, 1H, 15m = 116 plików, po 150 świec; maksymalnie 116 par. Przykłady: `dane/EURUSD_1HOUR.txt`, `dane/EURUSD_4HOUR.txt`, `dane/EURUSD_15MIN.txt`.
+Konfiguracja: 29 instrumentów × 1D, 4H, 1H, 15m = 116 plików, po 350 świec; maksymalnie 116 par. Przykłady: `dane/EURUSD_1HOUR.txt`, `dane/EURUSD_4HOUR.txt`, `dane/EURUSD_15MIN.txt`.
 
 Budzik tworzy nowy przebieg REST API (`workflow_dispatch`, `run_attempt = 1`), więc przechodzi obie blokady ponowień. Przy nakładaniu niedawny starszy przebieg blokuje pobieranie. Zawieszony przebieg przestaje blokować po ok. 30 minutach od utworzenia (granica dokładnie 30 minut jeszcze blokuje; przy budziku co 5 minut wznowienie zwykle po ok. 30–35 minutach). Ostrzeżenie jest w logu `sprawdz`; wiszący przebieg anuluj ręcznie w Actions. Zarówno `sprawdz`, jak i job `dane` odmawiają pracy po ponad 10 minutach od utworzenia przebiegu. Przy kolejce GitHuba dłuższej niż 10 minut dane wrócą, gdy kolejka zmaleje. Job `sprawdz` ma limit 2 minut, job `dane` 15 minut; `timeout-minutes` nie liczy oczekiwania na maszynę ani środowisko. Bezpiecznik 60 minut po 403/429 obowiązuje także budzik.
 
@@ -34,7 +34,7 @@ Ogon pustego cache: `limit=min(5000,pojemność)`; istniejącego: sufit czasu od
 
 Przy pełnym cache jest 116 zapytań na przebieg (29 symboli × 2 bazy × BID/ASK). Zimny albo krótki cache dodaje najwyżej 2 zapytania na bazę i symbol (maksymalnie 232 łącznie). 1H po zimnym starcie potrzebuje ogona 5000 i jednej strony do 4600; 15m może zapełnić się z jednego ogona 2000. Dla samego nowego AUDCHF przy pełnym cache pozostałych instrumentów pierwszy przebieg wymaga 118 zapytań, kolejne 116. Liczby zależą od długości odpowiedzi dostawcy i dostępnego budżetu czasu.
 
-Pliki Pages zawierają ostatnie 150 świec; ostatnia świeca może być niepełna. Plik 1H powstaje z historii 1H w cache, tej samej co 4H/1D, bez dodatkowych zapytań, z natywną siatką UTC (`sesja: UTC`). Plik 15m powstaje z cache 15m.
+Pliki Pages zawierają ostatnie 350 świec (dla par walutowych, handlowanych 24/5: 1D ≈ 70 tygodni, ok. 1,3 roku; 4H ≈ 12 tygodni; 1H ≈ 3 tygodnie; 15m ≈ 3,6 doby handlu); ostatnia świeca może być niepełna. Plik 1H powstaje z historii 1H w cache, tej samej co 4H/1D, bez dodatkowych zapytań, z natywną siatką UTC (`sesja: UTC`). Plik 15m powstaje z cache 15m.
 
 Od 2026-10-15 Pages pomija ponowne wdrożenie już opublikowanej wersji, a API przyjmuje jako `pages_build_version` tylko commit istniejący w repozytorium (inna wartość → 404). Dlatego job `wersja` (jedyny z `contents: write`, tylko gdy `sprawdz` daje `uruchom=tak`) tworzy przez Git Data API obiekt commita z tym samym drzewem i rodzicem równym SHA main, bez aktualizacji żadnej gałęzi ani tagu. Commit pozostaje nieosiągalny, historia main nie zmienia się, a Publikacja używa jego SHA. Przy każdym 4xx dla tego commita albo jego braku następuje fallback do SHA main z `::warning`; błąd publikacji z SHA main kończy krok bez ponowień. Dozwolona zawartość strony: `index.html` i `dane/*.txt`.
 
